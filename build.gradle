@@ -1,0 +1,87 @@
+plugins {
+    id 'java'
+    id 'eclipse'
+    id 'org.jetbrains.gradle.plugin.idea-ext' version '1.1.8'
+    id("xyz.jpenilla.run-velocity") version "2.3.1"
+    id 'com.github.johnrengelman.shadow' version '8.1.1'
+}
+
+group = 'land.euko'
+version = '1.0'
+
+repositories {
+    mavenCentral()
+    maven {
+        name = "papermc-repo"
+        url = "https://repo.papermc.io/repository/maven-public/"
+    }
+    maven {
+        setName("elytrium-repo")
+        setUrl("https://maven.elytrium.net/repo/")
+    }
+}
+
+dependencies {
+    compileOnly("com.velocitypowered:velocity-api:3.4.0-SNAPSHOT")
+    annotationProcessor("com.velocitypowered:velocity-api:3.4.0-SNAPSHOT")
+
+    compileOnly 'org.projectlombok:lombok:1.18.30'
+    annotationProcessor 'org.projectlombok:lombok:1.18.30'
+
+    implementation 'org.java-websocket:Java-WebSocket:1.6.0'
+
+    compileOnly "net.elytrium.limboapi:api:1.1.26"
+
+    implementation 'com.google.code.gson:gson:2.10.1'
+    implementation 'org.yaml:snakeyaml:2.2'
+}
+
+// Настройка Shadow JAR для упаковки зависимостей
+shadowJar {
+    archiveClassifier.set('')
+
+    // Relocate библиотек для избежания конфликтов
+    relocate 'org.java_websocket', 'land.euko.libs.websocket'
+    relocate 'com.google.gson', 'land.euko.libs.gson'
+    relocate 'org.yaml.snakeyaml', 'land.euko.libs.snakeyaml'
+
+    // Минимизация JAR (опционально, удаляет неиспользуемые классы)
+    // minimize()
+}
+
+// Использовать shadowJar вместо обычного jar
+build {
+    dependsOn shadowJar
+}
+
+tasks {
+    runVelocity {
+        velocityVersion("3.4.0-SNAPSHOT")
+    }
+}
+
+def targetJavaVersion = 17
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release.set(targetJavaVersion)
+}
+
+def templateSource = file('src/main/templates')
+def templateDest = layout.buildDirectory.dir('generated/sources/templates')
+def generateTemplates = tasks.register('generateTemplates', Copy) { task ->
+    def props = ['version': project.version]
+    task.inputs.properties props
+
+    task.from templateSource
+    task.into templateDest
+    task.expand props
+}
+
+sourceSets.main.java.srcDir(generateTemplates.map { it.outputs })
+
+project.idea.project.settings.taskTriggers.afterSync generateTemplates
+project.eclipse.synchronizationTasks(generateTemplates)
