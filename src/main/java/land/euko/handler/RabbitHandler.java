@@ -25,10 +25,27 @@ public class RabbitHandler {
                 JsonObject json = gson.fromJson(message, JsonObject.class);
                 String action = json.has("action") ? json.get("action").getAsString() : null;
 
-                if ("broadcast".equals(action)) {
+                if ("auth_result".equals(action)) {
+                    String nickname = json.get("nickname").getAsString();
+                    boolean success = json.get("success").getAsBoolean();
+                    String reason = null;
+                    if (json.has("reason") && !json.get("reason").isJsonNull()) {
+                        reason = json.get("reason").getAsString();
+                    }
+
+                    AuthHandler handler = plugin.getAuthHandler(nickname);
+                    if (handler != null) {
+                        handler.handleAuthResult(success, reason);
+                        logger.info("Auth result для {}: success={}, reason={}",
+                                nickname, success, reason);
+                    } else {
+                        logger.warn("AuthHandler не найден для игрока {}", nickname);
+                    }
+
+                } else if ("broadcast".equals(action)) {
                     String text = json.get("message").getAsString();
                     server.sendMessage(net.kyori.adventure.text.Component.text(text));
-                    logger.info("Broadcast message sent: {}", text);
+                    logger.info("Broadcast: {}", text);
 
                 } else if ("execute_command".equals(action)) {
                     String command = json.get("command").getAsString();
@@ -44,7 +61,7 @@ public class RabbitHandler {
                     });
 
                 } else {
-                    logger.warn("Unknown action received: {}", action);
+                    logger.warn("Unknown action: {}", action);
                 }
 
             } catch (Exception e) {

@@ -11,7 +11,6 @@ import com.velocitypowered.api.plugin.Plugin;
 import com.velocitypowered.api.plugin.PluginContainer;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
-import land.euko.auth.ChallengeAuthManager;
 import land.euko.backend.RabbitMQWebSocketClient;
 import land.euko.config.Config;
 import land.euko.handler.AuthHandler;
@@ -29,9 +28,7 @@ import java.io.File;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 @Plugin(
         id = "eukovelocity",
@@ -59,10 +56,9 @@ public class Main {
 
     private RabbitMQWebSocketClient wsClient;
     private RabbitHandler rabbitHandler;
-    private ChallengeAuthManager challengeManager;
     private final Gson gson = new Gson();
 
-    private final Map<UUID, AuthHandler> authHandlers = new ConcurrentHashMap<>();
+    private final Map<String, AuthHandler> authHandlers = new ConcurrentHashMap<>();
 
     @Inject
     public Main(Logger logger, ProxyServer server, @DataDirectory Path dataDirectory) {
@@ -106,14 +102,6 @@ public class Main {
             return;
         }
 
-        // ВАЖНО: Передаем dataDirectory в ChallengeAuthManager
-        this.challengeManager = new ChallengeAuthManager(logger, dataDirectory);
-        logger.info("ChallengeAuthManager инициализирован");
-
-        server.getScheduler().buildTask(this, () -> {
-            challengeManager.cleanupExpired();
-        }).repeat(60, TimeUnit.SECONDS).schedule();
-
         this.rabbitHandler = new RabbitHandler(logger, this);
 
         if (Config.IMP.RABBIT.ENABLED) {
@@ -131,7 +119,7 @@ public class Main {
 
         logger.info("╔═══════════════════════════════════════════╗");
         logger.info("║  EukoVelocity успешно запущен!            ║");
-        logger.info("║  Challenge-Response Auth с RSA подписью   ║");
+        logger.info("║  By Tokishu :3                            ║");
         logger.info("╚═══════════════════════════════════════════╝");
     }
 
@@ -140,7 +128,7 @@ public class Main {
         event.addCallback(() -> {
             try {
                 AuthHandler handler = new AuthHandler(this.server, event.getPlayer(), this);
-                authHandlers.put(event.getPlayer().getUniqueId(), handler);
+                authHandlers.put(event.getPlayer().getUsername().toLowerCase(), handler);
 
                 this.authLimbo.spawnPlayer(
                         event.getPlayer(),
@@ -152,16 +140,12 @@ public class Main {
         });
     }
 
-    public ChallengeAuthManager getChallengeManager() {
-        return challengeManager;
+    public AuthHandler getAuthHandler(String nickname) {
+        return authHandlers.get(nickname.toLowerCase());
     }
 
-    public AuthHandler getAuthHandler(UUID playerId) {
-        return authHandlers.get(playerId);
-    }
-
-    public void removeAuthHandler(UUID playerId) {
-        authHandlers.remove(playerId);
+    public void removeAuthHandler(String nickname) {
+        authHandlers.remove(nickname.toLowerCase());
     }
 
     @Subscribe

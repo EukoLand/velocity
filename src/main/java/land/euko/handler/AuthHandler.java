@@ -1,11 +1,9 @@
 package land.euko.handler;
 
-import com.google.gson.JsonObject;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import com.velocitypowered.api.scheduler.ScheduledTask;
 import land.euko.Main;
-import land.euko.auth.ChallengeAuthManager;
 import net.elytrium.limboapi.api.Limbo;
 import net.elytrium.limboapi.api.LimboSessionHandler;
 import net.elytrium.limboapi.api.player.LimboPlayer;
@@ -22,7 +20,6 @@ public class AuthHandler implements LimboSessionHandler {
     private final ProxyServer server;
     private final Player proxyPlayer;
     private final Main plugin;
-    private final ChallengeAuthManager challengeManager;
 
     @MonotonicNonNull
     private LimboPlayer limboPlayer;
@@ -36,7 +33,6 @@ public class AuthHandler implements LimboSessionHandler {
         this.server = server;
         this.proxyPlayer = proxyPlayer;
         this.plugin = plugin;
-        this.challengeManager = plugin.getChallengeManager();
     }
 
     @Override
@@ -47,7 +43,7 @@ public class AuthHandler implements LimboSessionHandler {
         // Показываем приветствие
         Title title = Title.title(
                 Component.text("Добро пожаловать!", NamedTextColor.GOLD),
-                Component.text("Авторизация...", NamedTextColor.YELLOW),
+                Component.text("Проверка авторизации...", NamedTextColor.YELLOW),
                 Title.Times.times(
                         Duration.ofMillis(500),
                         Duration.ofSeconds(30),
@@ -56,25 +52,21 @@ public class AuthHandler implements LimboSessionHandler {
         );
         this.proxyPlayer.showTitle(title);
 
-        // Генерируем challenge и отправляем клиенту
-        String challenge = challengeManager.createChallenge(proxyPlayer.getUniqueId());
+        plugin.getLogger().info("Игрок {} в лимбо, ожидаем данные от API...",
+                proxyPlayer.getUsername());
 
-        // Отправляем challenge в специальном формате (клиент должен его перехватить)
-        this.proxyPlayer.sendMessage(
-                Component.text("§8[AUTH_CHALLENGE]§7" + challenge)
-        );
-
-        plugin.getLogger().info("Отправлен challenge игроку {}: {}",
-                proxyPlayer.getUsername(), challenge);
-
+        // Таймаут на случай если мод не установлен или API не ответит
         this.timeoutTask = server.getScheduler()
                 .buildTask(plugin, () -> {
                     if (!isAuthenticated) {
                         this.proxyPlayer.disconnect(
-                                Component.text("Время авторизации истекло!", NamedTextColor.RED)
+                                Component.text("§c✗ Время ожидания истекло!\n\n" +
+                                                "§7Возможно у вас не установлен мод EukoAuth\n" +
+                                                "§7Скачайте его на §eeuko.land",
+                                        NamedTextColor.RED)
                         );
-                        challengeManager.cancelChallenge(proxyPlayer.getUniqueId());
-                        plugin.getLogger().warn("Игрок {} не прошел авторизацию вовремя",
+                        plugin.removeAuthHandler(proxyPlayer.getUsername());
+                        plugin.getLogger().warn("Игрок {} не прошел авторизацию (таймаут)",
                                 proxyPlayer.getUsername());
                     }
                 })
@@ -82,87 +74,49 @@ public class AuthHandler implements LimboSessionHandler {
                 .schedule();
     }
 
-    @Override
-    public void onChat(String chat) {
-        // Проверяем что это команда /auth
-        if (!chat.startsWith("/auth ")) {
-            return;
+    /**
+     * Вызывается из RabbitHandler когда приходит решение от API
+     */
+    public void handleAuthResult(boolean success, String reason) {
+        if (isAuthenticated) {
+            return; // Уже обработано
         }
 
-        // Извлекаем зашифрованные данные
-        String encryptedData = chat.substring(6).trim();
+        isAuthenticated = true;
 
-        if (encryptedData.isEmpty()) {
+        if (timeoutTask != null) {
+            timeoutTask.cancel();
+        }
+
+        if (success) {
             this.proxyPlayer.sendMessage(
-                    Component.text("❌ Неверный формат команды", NamedTextColor.RED)
-            );
-            return;
-        }
-
-        plugin.getLogger().info("Получен auth response от {}", proxyPlayer.getUsername());
-
-        JsonObject authData = challengeManager.verifyResponse(
-                proxyPlayer.getUniqueId(),
-                encryptedData
-        );
-
-        if (authData == null) {
-            this.proxyPlayer.disconnect(
-                    Component.text("❌ Ошибка авторизации!", NamedTextColor.RED)
-            );
-            plugin.getLogger().warn("Неверный auth response от {}", proxyPlayer.getUsername());
-            return;
-        }
-
-        // Извлекаем данные
-        String authToken = authData.get("authToken").getAsString();
-        String version = authData.get("version").getAsString();
-        String username = authData.get("username").getAsString();
-
-        plugin.getLogger().info("Данные авторизации от {}: token={}, version={}",
-                username, authToken, version);
-
-        // Валидируем данные (здесь можно добавить проверку через API/БД)
-        if (validateAuthData(authToken, version, username)) {
-            isAuthenticated = true;
-
-            if (timeoutTask != null) {
-                timeoutTask.cancel();
-            }
-
-            this.proxyPlayer.sendMessage(
-                    Component.text("Авторизация успешна!", NamedTextColor.GREEN)
+                    Component.text("✓ Авторизация успешна!", NamedTextColor.GREEN)
             );
 
             plugin.getLogger().info("Игрок {} успешно авторизован", proxyPlayer.getUsername());
 
+            // Отключаем от лимбо и пускаем на сервер
             limboPlayer.disconnect();
 
         } else {
+            String message = reason != null && !reason.isEmpty()
+                    ? reason
+                    : "Ошибка авторизации";
+
             this.proxyPlayer.disconnect(
-                    Component.text("Неверные данные авторизации!", NamedTextColor.RED)
+                    Component.text("§c✗ " + message, NamedTextColor.RED)
             );
-            plugin.getLogger().warn("Игрок {} не прошел валидацию", proxyPlayer.getUsername());
+
+            plugin.getLogger().warn("Игрок {} не прошел авторизацию: {}",
+                    proxyPlayer.getUsername(), message);
         }
+
+        plugin.removeAuthHandler(proxyPlayer.getUsername());
     }
 
-    private boolean validateAuthData(String token, String version, String username) {
-        if (!username.equals(proxyPlayer.getUsername())) {
-            plugin.getLogger().warn("Username не совпадает: ожидается {}, получен {}",
-                    proxyPlayer.getUsername(), username);
-            return false;
-        }
+    @Override
+    public void onChat(String chat) {
 
-        // Здесь можно добавить проверку токена через:
-        // - REST API
-        // - RabbitMQ
-        // - База данных
-        // - Любой другой способ
-
-        plugin.getLogger().info("Валидация токена для {}: {}", username, token);
-
-        // Пока что просто проверяем что токен не пустой
-        return token != null && !token.isEmpty();
     }
 
     @Override
@@ -171,10 +125,7 @@ public class AuthHandler implements LimboSessionHandler {
             this.timeoutTask.cancel();
         }
 
-        challengeManager.cancelChallenge(proxyPlayer.getUniqueId());
-
-        plugin.removeAuthHandler(proxyPlayer.getUniqueId());
-
+        plugin.removeAuthHandler(proxyPlayer.getUsername());
         this.limboPlayer = null;
     }
 }
