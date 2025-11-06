@@ -5,6 +5,7 @@ import com.google.inject.Inject;
 import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
 import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
@@ -15,6 +16,7 @@ import land.euko.backend.RabbitMQWebSocketClient;
 import land.euko.config.Config;
 import land.euko.handler.AuthHandler;
 import land.euko.handler.RabbitHandler;
+import land.euko.model.OnlinePlayer;
 import lombok.Getter;
 import net.elytrium.limboapi.api.Limbo;
 import net.elytrium.limboapi.api.LimboFactory;
@@ -28,6 +30,7 @@ import java.io.File;
 import java.net.URI;
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 @Plugin(
@@ -59,6 +62,7 @@ public class Main {
     private final Gson gson = new Gson();
 
     private final Map<String, AuthHandler> authHandlers = new ConcurrentHashMap<>();
+    private final Map<String, OnlinePlayer> onlinePlayers = new ConcurrentHashMap<>();
 
     @Inject
     public Main(Logger logger, ProxyServer server, @DataDirectory Path dataDirectory) {
@@ -140,12 +144,45 @@ public class Main {
         });
     }
 
+    @Subscribe
+    public void onDisconnect(DisconnectEvent event) {
+        removeOnlinePlayer(event.getPlayer().getUsername());
+    }
+
     public AuthHandler getAuthHandler(String nickname) {
         return authHandlers.get(nickname.toLowerCase());
     }
 
     public void removeAuthHandler(String nickname) {
         authHandlers.remove(nickname.toLowerCase());
+    }
+
+    public void addOnlinePlayer(String nickname, String authKey) {
+        String lowerNickname = nickname.toLowerCase();
+        onlinePlayers.put(lowerNickname, new OnlinePlayer(nickname, authKey));
+        logger.info("Игрок {} добавлен в список онлайн (ключ: {})", nickname, authKey);
+    }
+
+    public void removeOnlinePlayer(String nickname) {
+        String lowerNickname = nickname.toLowerCase();
+        OnlinePlayer removed = onlinePlayers.remove(lowerNickname);
+        if (removed != null) {
+            logger.info("Игрок {} удален из списка онлайн", nickname);
+        }
+    }
+
+    public Optional<OnlinePlayer> getOnlinePlayerByNickname(String nickname) {
+        return Optional.ofNullable(onlinePlayers.get(nickname.toLowerCase()));
+    }
+
+    public Optional<OnlinePlayer> getOnlinePlayerByAuthKey(String authKey) {
+        return onlinePlayers.values().stream()
+                .filter(player -> player.getAuthKey().equals(authKey))
+                .findFirst();
+    }
+
+    public Map<String, OnlinePlayer> getOnlinePlayers() {
+        return new ConcurrentHashMap<>(onlinePlayers);
     }
 
     @Subscribe
@@ -157,6 +194,7 @@ public class Main {
         }
 
         authHandlers.clear();
+        onlinePlayers.clear();
         logger.info("EukoVelocity выключен");
     }
 

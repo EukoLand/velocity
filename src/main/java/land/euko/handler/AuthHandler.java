@@ -40,7 +40,6 @@ public class AuthHandler implements LimboSessionHandler {
         this.limboPlayer = player;
         player.disableFalling();
 
-        // Показываем приветствие
         Title title = Title.title(
                 Component.text("Добро пожаловать!", NamedTextColor.GOLD),
                 Component.text("Проверка авторизации...", NamedTextColor.YELLOW),
@@ -60,7 +59,8 @@ public class AuthHandler implements LimboSessionHandler {
                 .buildTask(plugin, () -> {
                     if (!isAuthenticated) {
                         this.proxyPlayer.disconnect(
-                                Component.text("§c✗ Время ожидания истекло!\n\n" +
+                                Component.text("§c✗ Авторизация не удалась\n\n" +
+                                                "§7Время ожидания истекло!\n" +
                                                 "§7Возможно у вас не установлен мод EukoAuth\n" +
                                                 "§7Скачайте его на §eeuko.land",
                                         NamedTextColor.RED)
@@ -77,7 +77,7 @@ public class AuthHandler implements LimboSessionHandler {
     /**
      * Вызывается из RabbitHandler когда приходит решение от API
      */
-    public void handleAuthResult(boolean success, String reason) {
+    public void handleAuthResult(boolean success, String reason, String authKey) {
         if (isAuthenticated) {
             return; // Уже обработано
         }
@@ -93,22 +93,26 @@ public class AuthHandler implements LimboSessionHandler {
                     Component.text("✓ Авторизация успешна!", NamedTextColor.GREEN)
             );
 
-            plugin.getLogger().info("Игрок {} успешно авторизован", proxyPlayer.getUsername());
+            plugin.getLogger().info("Игрок {} успешно авторизован с ключом {}",
+                    proxyPlayer.getUsername(), authKey);
 
-            // Отключаем от лимбо и пускаем на сервер
+            plugin.addOnlinePlayer(proxyPlayer.getUsername(), authKey);
             limboPlayer.disconnect();
 
         } else {
-            String message = reason != null && !reason.isEmpty()
-                    ? reason
-                    : "Ошибка авторизации";
+            String kickMessage = "§c✗ Авторизация не удалась\n\n";
+            if (reason != null && !reason.isEmpty()) {
+                kickMessage += "§7Причина: §f" + reason;
+            } else {
+                kickMessage += "§7Неизвестная ошибка";
+            }
 
             this.proxyPlayer.disconnect(
-                    Component.text("§c✗ " + message, NamedTextColor.RED)
+                    Component.text(kickMessage, NamedTextColor.RED)
             );
 
             plugin.getLogger().warn("Игрок {} не прошел авторизацию: {}",
-                    proxyPlayer.getUsername(), message);
+                    proxyPlayer.getUsername(), reason != null ? reason : "неизвестная ошибка");
         }
 
         plugin.removeAuthHandler(proxyPlayer.getUsername());
@@ -126,6 +130,7 @@ public class AuthHandler implements LimboSessionHandler {
         }
 
         plugin.removeAuthHandler(proxyPlayer.getUsername());
+        plugin.removeOnlinePlayer(proxyPlayer.getUsername());
         this.limboPlayer = null;
     }
 }
