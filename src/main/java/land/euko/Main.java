@@ -3,27 +3,23 @@ package land.euko;
 import com.google.gson.Gson;
 import com.google.inject.Inject;
 import com.velocitypowered.api.event.PostOrder;
+import com.velocitypowered.api.event.connection.PreLoginEvent;
+import com.velocitypowered.api.event.player.GameProfileRequestEvent;
 import com.velocitypowered.api.event.proxy.ProxyInitializeEvent;
 import com.velocitypowered.api.event.Subscribe;
 import com.velocitypowered.api.event.connection.DisconnectEvent;
 import com.velocitypowered.api.event.proxy.ProxyShutdownEvent;
-import com.velocitypowered.api.plugin.Dependency;
 import com.velocitypowered.api.plugin.Plugin;
-import com.velocitypowered.api.plugin.PluginContainer;
 import com.velocitypowered.api.plugin.annotation.DataDirectory;
 import com.velocitypowered.api.proxy.ProxyServer;
+import com.velocitypowered.api.util.GameProfile;
 import land.euko.backend.RabbitMQWebSocketClient;
 import land.euko.config.Config;
-import land.euko.handler.AuthHandler;
+import land.euko.config.MessagesConfig;
+import land.euko.handler.PreLoginAuthHandler;
 import land.euko.handler.RabbitHandler;
 import land.euko.model.OnlinePlayer;
 import lombok.Getter;
-import net.elytrium.limboapi.api.Limbo;
-import net.elytrium.limboapi.api.LimboFactory;
-import net.elytrium.limboapi.api.chunk.Dimension;
-import net.elytrium.limboapi.api.chunk.VirtualWorld;
-import net.elytrium.limboapi.api.event.LoginLimboRegisterEvent;
-import net.elytrium.limboapi.api.player.GameMode;
 import org.slf4j.Logger;
 
 import java.io.File;
@@ -31,17 +27,16 @@ import java.net.URI;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 @Plugin(
         id = "eukovelocity",
         name = "EukoVelocity",
         version = "1.0.0",
         url = "https://euko.land",
-        authors = {"Tokishu"},
-        dependencies = {
-                @Dependency(id = "limboapi")
-        }
+        authors = {"Tokishu"}
 )
 public class Main {
 
@@ -51,17 +46,19 @@ public class Main {
     @Getter
     private final ProxyServer server;
 
-    private final LimboFactory factory;
     private final Path dataDirectory;
-
-    @Getter
-    private Limbo authLimbo;
 
     private RabbitMQWebSocketClient wsClient;
     private RabbitHandler rabbitHandler;
     private final Gson gson = new Gson();
 
-    private final Map<String, AuthHandler> authHandlers = new ConcurrentHashMap<>();
+    // Активные обработчики авторизации (для связи с RabbitHandler)
+    private final Map<String, PreLoginAuthHandler> activeHandlers = new ConcurrentHashMap<>();
+
+    // Готовые результаты авторизации (для GameProfileRequest)
+    private final Map<String, PreLoginAuthHandler.AuthResult> authResults = new ConcurrentHashMap<>();
+
+    // Онлайн игроки
     private final Map<String, OnlinePlayer> onlinePlayers = new ConcurrentHashMap<>();
 
     @Inject
@@ -69,10 +66,6 @@ public class Main {
         this.logger = logger;
         this.server = server;
         this.dataDirectory = dataDirectory;
-        this.factory = (LimboFactory) server.getPluginManager()
-                .getPlugin("limboapi")
-                .flatMap(PluginContainer::getInstance)
-                .orElseThrow(() -> new RuntimeException("LimboAPI не найден!"));
     }
 
     @Subscribe
@@ -85,24 +78,6 @@ public class Main {
             logger.info("Конфиг загружен из: {}", configFile.getAbsolutePath());
         } catch (Exception e) {
             logger.error("Ошибка загрузки конфига: {}", e.getMessage(), e);
-            return;
-        }
-
-        try {
-            VirtualWorld authWorld = this.factory.createVirtualWorld(
-                    Dimension.THE_END,
-                    0, 100, 0,
-                    90F, 0F
-            );
-
-            this.authLimbo = this.factory.createLimbo(authWorld)
-                    .setName("AuthLimbo")
-                    .setWorldTime(1000L)
-                    .setGameMode(GameMode.ADVENTURE);
-
-            logger.info("LimboAPI инициализирован");
-        } catch (Exception e) {
-            logger.error("Ошибка LimboAPI: {}", e.getMessage(), e);
             return;
         }
 
@@ -127,47 +102,146 @@ public class Main {
         logger.info("╚═══════════════════════════════════════════╝");
     }
 
-    @Subscribe(order = PostOrder.LATE)
-    public void onLogin(LoginLimboRegisterEvent event) {
-        event.addCallback(() -> {
-            try {
-                AuthHandler handler = new AuthHandler(this.server, event.getPlayer(), this);
-                authHandlers.put(event.getPlayer().getUsername().toLowerCase(), handler);
+    /**
+     * ВСЯ ЛОГИКА АВТОРИЗАЦИИ ЗДЕСЬ
+     * Блокируем подключение до получения результата от RabbitMQ
+     */
+    @Subscribe(order = PostOrder.FIRST)
+    public void onPreLogin(PreLoginEvent event) {
+        String username = event.getUsername();
+        String lowerUsername = username.toLowerCase();
 
-                this.authLimbo.spawnPlayer(
-                        event.getPlayer(),
-                        handler
-                );
-            } catch (Exception e) {
-                logger.error("Ошибка спавна в лимбо: {}", e.getMessage(), e);
+        logger.info("PreLogin для игрока {}, ожидаем авторизацию...", username);
+
+        // Создаем обработчик и сохраняем для RabbitHandler
+        PreLoginAuthHandler handler = new PreLoginAuthHandler(this, username);
+        activeHandlers.put(lowerUsername, handler);
+
+        try {
+            // Ждём результат авторизации ЗДЕСЬ, в PreLogin
+            PreLoginAuthHandler.AuthResult result = handler.getAuthFuture()
+                    .get(15, TimeUnit.SECONDS);
+
+            logger.info("✓ Auth result для {}: success={}, key={}, uuid={}",
+                    username, result.isSuccess(), result.getAuthKey(), result.getUuid());
+
+            if (result.isSuccess()) {
+                // Валидируем UUID
+                try {
+                    UUID.fromString(result.getUuid());
+
+                    // Сохраняем результат для GameProfileRequest
+                    authResults.put(lowerUsername, result);
+                    logger.info("✓ Авторизация успешна для {}", username);
+
+                } catch (IllegalArgumentException e) {
+                    logger.error("❌ Неверный формат UUID для {}: {}", username, result.getUuid());
+                    event.setResult(PreLoginEvent.PreLoginComponentResult.denied(
+                            MessagesConfig.authFailed("Неверный формат UUID")
+                    ));
+                }
+            } else {
+                // Авторизация провалилась - отклоняем подключение
+                logger.warn("❌ Авторизация провалилась для {}: {}", username, result.getReason());
+                event.setResult(PreLoginEvent.PreLoginComponentResult.denied(
+                        MessagesConfig.authFailed(result.getReason())
+                ));
             }
-        });
+
+        } catch (java.util.concurrent.TimeoutException e) {
+            logger.error("❌ ТАЙМАУТ авторизации для {} (15 сек)", username);
+            event.setResult(PreLoginEvent.PreLoginComponentResult.denied(MessagesConfig.AUTH_TIMEOUT));
+
+        } catch (Exception e) {
+            logger.error("❌ Ошибка авторизации для {}: {}", username, e.getMessage(), e);
+            event.setResult(PreLoginEvent.PreLoginComponentResult.denied(MessagesConfig.AUTH_TIMEOUT));
+
+        } finally {
+            // Удаляем handler после обработки
+            activeHandlers.remove(lowerUsername);
+        }
+    }
+
+    @Subscribe(order = PostOrder.FIRST)
+    public void onGameProfileRequest(GameProfileRequestEvent event) {
+        String username = event.getUsername();
+        String lowerUsername = username.toLowerCase();
+
+        logger.info("🔍 GameProfileRequest вызван для {}", username);
+
+        // ЗАЩИТА ОТ ПОВТОРНОЙ ОБРАБОТКИ
+        if (authResults.containsKey(lowerUsername + "_applied")) {
+            logger.debug("UUID уже применён для {}, пропускаем", username);
+            return;
+        }
+
+        PreLoginAuthHandler.AuthResult result = authResults.get(lowerUsername);
+
+        if (result == null) {
+            logger.error("❌ Результат авторизации не найден для {} (возможно уже удалён)", username);
+            return;  // ← ВОТ ПОЧЕМУ НЕ РАБОТАЕТ СО 2-ГО РАЗА!
+        }
+
+        if (result.isSuccess()) {
+            try {
+                UUID playerUUID = UUID.fromString(result.getUuid());
+
+                GameProfile newProfile = event.getOriginalProfile().withId(playerUUID);
+                event.setGameProfile(newProfile);
+
+                addOnlinePlayer(username, result.getAuthKey(), result.getUuid());
+                authResults.put(lowerUsername + "_applied", result);
+
+                logger.info("✓ UUID применён для {}: {}", username, playerUUID);
+
+            } catch (Exception e) {
+                logger.error("❌ Ошибка применения UUID для {}: {}", username, e.getMessage());
+            }
+        }
     }
 
     @Subscribe
     public void onDisconnect(DisconnectEvent event) {
-        removeOnlinePlayer(event.getPlayer().getUsername());
+        String username = event.getPlayer().getUsername();
+        String lowerUsername = username.toLowerCase();
+
+        removeOnlinePlayer(username);
+        // НЕ УДАЛЯЕМ authResults здесь - пусть живёт
+        // authResults.remove(lowerUsername);  // ← ЗАКОММЕНТИРУЙТЕ
+        authResults.remove(lowerUsername + "_applied");  // ← Только флаг удаляем
+        activeHandlers.remove(lowerUsername);
     }
 
-    public AuthHandler getAuthHandler(String nickname) {
-        return authHandlers.get(nickname.toLowerCase());
+    /**
+     * Вызывается из RabbitHandler когда приходит ответ от API
+     */
+    public void completeAuthForPlayer(String nickname, boolean success, String reason, String authKey, String uuid) {
+        PreLoginAuthHandler handler = activeHandlers.get(nickname.toLowerCase());
+        if (handler != null) {
+            handler.completeAuth(success, reason, authKey, uuid);
+            logger.debug("✓ completeAuth вызван для {}", nickname);
+        } else {
+            logger.warn("❌ Handler не найден для {}", nickname);
+        }
     }
 
-    public void removeAuthHandler(String nickname) {
-        authHandlers.remove(nickname.toLowerCase());
-    }
-
-    public void addOnlinePlayer(String nickname, String authKey) {
+    public void addOnlinePlayer(String nickname, String authKey, String uuid) {
         String lowerNickname = nickname.toLowerCase();
-        onlinePlayers.put(lowerNickname, new OnlinePlayer(nickname, authKey));
-        logger.info("Игрок {} добавлен в список онлайн (ключ: {})", nickname, authKey);
+
+        if (onlinePlayers.containsKey(lowerNickname)) {
+            logger.debug("Игрок {} уже в онлайн, пропускаем", nickname);
+            return;
+        }
+
+        onlinePlayers.put(lowerNickname, new OnlinePlayer(nickname, authKey, uuid));
+        logger.info("✓ Игрок {} добавлен в онлайн (UUID: {})", nickname, uuid);
     }
 
     public void removeOnlinePlayer(String nickname) {
         String lowerNickname = nickname.toLowerCase();
         OnlinePlayer removed = onlinePlayers.remove(lowerNickname);
         if (removed != null) {
-            logger.info("Игрок {} удален из списка онлайн", nickname);
+            logger.info("✓ Игрок {} удалён из онлайн", nickname);
         }
     }
 
@@ -193,7 +267,8 @@ public class Main {
             wsClient.close();
         }
 
-        authHandlers.clear();
+        activeHandlers.clear();
+        authResults.clear();
         onlinePlayers.clear();
         logger.info("EukoVelocity выключен");
     }

@@ -1,11 +1,12 @@
 package land.euko.model;
 
-import lombok.AllArgsConstructor;
-import lombok.Data;
+import lombok.Getter;
+import lombok.RequiredArgsConstructor;
 
-@Data
-@AllArgsConstructor
+@Getter
+@RequiredArgsConstructor
 public class OnlinePlayer {
-    private String nickname;
-    private String authKey;
+    private final String nickname;
+    private final String authKey;
+    private final String uuid;
 }

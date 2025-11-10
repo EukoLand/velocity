@@ -2,13 +2,11 @@ package land.euko.handler;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.ProxyServer;
 import land.euko.Main;
+import land.euko.config.MessagesConfig;
 import land.euko.model.OnlinePlayer;
 import lombok.Getter;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.slf4j.Logger;
 
 import java.util.Optional;
@@ -50,39 +48,33 @@ public class RabbitHandler {
         }).schedule();
     }
 
+    /**
+     * Обрабатываем результат авторизации от API
+     */
     private void handleAuthResult(JsonObject json, ProxyServer server) {
         String nickname = json.get("nickname").getAsString();
         boolean success = json.get("success").getAsBoolean();
         String reason = json.has("reason") && !json.get("reason").isJsonNull()
-                ? json.get("reason").getAsString()
-                : null;
+                ? json.get("reason").getAsString() : null;
         String authKey = json.has("auth_key") && !json.get("auth_key").isJsonNull()
-                ? json.get("auth_key").getAsString()
-                : "unknown";
+                ? json.get("auth_key").getAsString() : "unknown";
+        String uuid = json.has("uuid") && !json.get("uuid").isJsonNull()
+                ? json.get("uuid").getAsString() : null;
 
-        AuthHandler handler = plugin.getAuthHandler(nickname);
-        if (handler != null) {
-            handler.handleAuthResult(success, reason, authKey);
-            logger.info("Auth result для {}: success={}, reason={}, key={}",
-                    nickname, success, reason, authKey);
-        } else {
-            logger.warn("AuthHandler не найден для игрока {}", nickname);
-        }
+        logger.info("🐰 RabbitMQ auth_result: {} - success={}", nickname, success);
+
+        plugin.completeAuthForPlayer(nickname, success, reason, authKey, uuid);
     }
 
     private void handleKickPlayer(JsonObject json, ProxyServer server) {
         String playerName = json.get("player").getAsString();
         String reason = json.has("reason") && !json.get("reason").isJsonNull()
                 ? json.get("reason").getAsString()
-                : "Вы были кикнуты";
+                : MessagesConfig.DEFAULT_KICK_REASON;
 
         server.getPlayer(playerName).ifPresentOrElse(
                 player -> {
-                    Component kickMessage = Component.text(
-                            "§c✗ Вы были отключены от сервера\n\n§7Причина: §f" + reason,
-                            NamedTextColor.RED
-                    );
-                    player.disconnect(kickMessage);
+                    player.disconnect(MessagesConfig.kickMessage(reason));
                     logger.info("Player {} kicked by nickname: {}", playerName, reason);
                 },
                 () -> logger.warn("Cannot kick player {}: not found online", playerName)
@@ -93,7 +85,7 @@ public class RabbitHandler {
         String authKey = json.get("auth_key").getAsString();
         String reason = json.has("reason") && !json.get("reason").isJsonNull()
                 ? json.get("reason").getAsString()
-                : "Вы были кикнуты";
+                : MessagesConfig.DEFAULT_KICK_REASON;
 
         Optional<OnlinePlayer> onlinePlayer = plugin.getOnlinePlayerByAuthKey(authKey);
 
@@ -101,11 +93,7 @@ public class RabbitHandler {
             String nickname = onlinePlayer.get().getNickname();
             server.getPlayer(nickname).ifPresentOrElse(
                     player -> {
-                        Component kickMessage = Component.text(
-                                "§c✗ Вы были отключены от сервера\n\n§7Причина: §f" + reason,
-                                NamedTextColor.RED
-                        );
-                        player.disconnect(kickMessage);
+                        player.disconnect(MessagesConfig.kickMessage(reason));
                         logger.info("Player {} kicked by auth_key {}: {}", nickname, authKey, reason);
                     },
                     () -> logger.warn("Cannot kick player with key {}: player object not found", authKey)
