@@ -102,10 +102,6 @@ public class Main {
         logger.info("╚═══════════════════════════════════════════╝");
     }
 
-    /**
-     * ВСЯ ЛОГИКА АВТОРИЗАЦИИ ЗДЕСЬ
-     * Блокируем подключение до получения результата от RabbitMQ
-     */
     @Subscribe(order = PostOrder.FIRST)
     public void onPreLogin(PreLoginEvent event) {
         String username = event.getUsername();
@@ -113,51 +109,45 @@ public class Main {
 
         logger.info("PreLogin для игрока {}, ожидаем авторизацию...", username);
 
-        // Создаем обработчик и сохраняем для RabbitHandler
         PreLoginAuthHandler handler = new PreLoginAuthHandler(this, username);
         activeHandlers.put(lowerUsername, handler);
 
         try {
-            // Ждём результат авторизации ЗДЕСЬ, в PreLogin
             PreLoginAuthHandler.AuthResult result = handler.getAuthFuture()
                     .get(15, TimeUnit.SECONDS);
 
-            logger.info("✓ Auth result для {}: success={}, key={}, uuid={}",
+            logger.info("Auth result для {}: success={}, key={}, uuid={}",
                     username, result.isSuccess(), result.getAuthKey(), result.getUuid());
 
             if (result.isSuccess()) {
-                // Валидируем UUID
                 try {
                     UUID.fromString(result.getUuid());
 
-                    // Сохраняем результат для GameProfileRequest
                     authResults.put(lowerUsername, result);
-                    logger.info("✓ Авторизация успешна для {}", username);
+                    logger.info("Авторизация успешна для {}", username);
 
                 } catch (IllegalArgumentException e) {
-                    logger.error("❌ Неверный формат UUID для {}: {}", username, result.getUuid());
+                    logger.error("Неверный формат UUID для {}: {}", username, result.getUuid());
                     event.setResult(PreLoginEvent.PreLoginComponentResult.denied(
                             MessagesConfig.authFailed("Неверный формат UUID")
                     ));
                 }
             } else {
-                // Авторизация провалилась - отклоняем подключение
-                logger.warn("❌ Авторизация провалилась для {}: {}", username, result.getReason());
+                logger.warn("Авторизация провалилась для {}: {}", username, result.getReason());
                 event.setResult(PreLoginEvent.PreLoginComponentResult.denied(
                         MessagesConfig.authFailed(result.getReason())
                 ));
             }
 
         } catch (java.util.concurrent.TimeoutException e) {
-            logger.error("❌ ТАЙМАУТ авторизации для {} (15 сек)", username);
+            logger.error("ТАЙМАУТ авторизации для {} (15 сек)", username);
             event.setResult(PreLoginEvent.PreLoginComponentResult.denied(MessagesConfig.AUTH_TIMEOUT));
 
         } catch (Exception e) {
-            logger.error("❌ Ошибка авторизации для {}: {}", username, e.getMessage(), e);
+            logger.error("Ошибка авторизации для {}: {}", username, e.getMessage(), e);
             event.setResult(PreLoginEvent.PreLoginComponentResult.denied(MessagesConfig.AUTH_TIMEOUT));
 
         } finally {
-            // Удаляем handler после обработки
             activeHandlers.remove(lowerUsername);
         }
     }
@@ -167,9 +157,8 @@ public class Main {
         String username = event.getUsername();
         String lowerUsername = username.toLowerCase();
 
-        logger.info("🔍 GameProfileRequest вызван для {}", username);
+        logger.info("GameProfileRequest вызван для {}", username);
 
-        // ЗАЩИТА ОТ ПОВТОРНОЙ ОБРАБОТКИ
         if (authResults.containsKey(lowerUsername + "_applied")) {
             logger.debug("UUID уже применён для {}, пропускаем", username);
             return;
@@ -178,8 +167,8 @@ public class Main {
         PreLoginAuthHandler.AuthResult result = authResults.get(lowerUsername);
 
         if (result == null) {
-            logger.error("❌ Результат авторизации не найден для {} (возможно уже удалён)", username);
-            return;  // ← ВОТ ПОЧЕМУ НЕ РАБОТАЕТ СО 2-ГО РАЗА!
+            logger.error("Результат авторизации не найден для {} (возможно уже удалён)", username);
+            return;
         }
 
         if (result.isSuccess()) {
@@ -192,10 +181,10 @@ public class Main {
                 addOnlinePlayer(username, result.getAuthKey(), result.getUuid());
                 authResults.put(lowerUsername + "_applied", result);
 
-                logger.info("✓ UUID применён для {}: {}", username, playerUUID);
+                logger.info("UUID применён для {}: {}", username, playerUUID);
 
             } catch (Exception e) {
-                logger.error("❌ Ошибка применения UUID для {}: {}", username, e.getMessage());
+                logger.error("Ошибка применения UUID для {}: {}", username, e.getMessage());
             }
         }
     }
@@ -206,22 +195,18 @@ public class Main {
         String lowerUsername = username.toLowerCase();
 
         removeOnlinePlayer(username);
-        // НЕ УДАЛЯЕМ authResults здесь - пусть живёт
-        // authResults.remove(lowerUsername);  // ← ЗАКОММЕНТИРУЙТЕ
-        authResults.remove(lowerUsername + "_applied");  // ← Только флаг удаляем
+        // authResults.remove(lowerUsername);
+        authResults.remove(lowerUsername + "_applied");
         activeHandlers.remove(lowerUsername);
     }
 
-    /**
-     * Вызывается из RabbitHandler когда приходит ответ от API
-     */
     public void completeAuthForPlayer(String nickname, boolean success, String reason, String authKey, String uuid) {
         PreLoginAuthHandler handler = activeHandlers.get(nickname.toLowerCase());
         if (handler != null) {
             handler.completeAuth(success, reason, authKey, uuid);
-            logger.debug("✓ completeAuth вызван для {}", nickname);
+            logger.debug("completeAuth вызван для {}", nickname);
         } else {
-            logger.warn("❌ Handler не найден для {}", nickname);
+            logger.warn("Handler не найден для {}", nickname);
         }
     }
 
@@ -234,14 +219,14 @@ public class Main {
         }
 
         onlinePlayers.put(lowerNickname, new OnlinePlayer(nickname, authKey, uuid));
-        logger.info("✓ Игрок {} добавлен в онлайн (UUID: {})", nickname, uuid);
+        logger.info("Игрок {} добавлен в онлайн (UUID: {})", nickname, uuid);
     }
 
     public void removeOnlinePlayer(String nickname) {
         String lowerNickname = nickname.toLowerCase();
         OnlinePlayer removed = onlinePlayers.remove(lowerNickname);
         if (removed != null) {
-            logger.info("✓ Игрок {} удалён из онлайн", nickname);
+            logger.info("Игрок {} удалён из онлайн", nickname);
         }
     }
 
